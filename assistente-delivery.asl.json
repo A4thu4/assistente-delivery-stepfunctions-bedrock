@@ -1,0 +1,131 @@
+{
+  "Comment": "Assistente de Delivery - Step Functions + Amazon Bedrock (desafio DIO Nublify)",
+  "StartAt": "ValidarPedido",
+  "States": {
+    "ValidarPedido": {
+      "Type": "Choice",
+      "Comment": "Pedido precisa ter ao menos 1 item, valor positivo e endereco",
+      "Choices": [
+        {
+          "And": [
+            { "Variable": "$.pedido.itens[0]", "IsPresent": true },
+            { "Variable": "$.pedido.endereco", "IsPresent": true },
+            { "Variable": "$.pedido.valorTotal", "IsPresent": true },
+            { "Variable": "$.pedido.valorTotal", "NumericGreaterThan": 0 }
+          ],
+          "Next": "ProcessarPagamento"
+        }
+      ],
+      "Default": "PedidoInvalido"
+    },
+    "PedidoInvalido": {
+      "Type": "Fail",
+      "Error": "PedidoInvalido",
+      "Cause": "Pedido sem itens, sem endereco ou com valor total invalido."
+    },
+    "ProcessarPagamento": {
+      "Type": "Choice",
+      "Comment": "Simulacao do gateway de pagamento: PIX e CARTAO sao aprovados",
+      "Choices": [
+        {
+          "Or": [
+            { "Variable": "$.pedido.pagamento.metodo", "StringEquals": "PIX" },
+            { "Variable": "$.pedido.pagamento.metodo", "StringEquals": "CARTAO" }
+          ],
+          "Next": "PagamentoAprovado"
+        }
+      ],
+      "Default": "PagamentoRecusado"
+    },
+    "PagamentoRecusado": {
+      "Type": "Fail",
+      "Error": "PagamentoRecusado",
+      "Cause": "Metodo de pagamento nao aceito ou pagamento negado."
+    },
+    "PagamentoAprovado": {
+      "Type": "Pass",
+      "Result": { "status": "APROVADO" },
+      "ResultPath": "$.pagamentoResultado",
+      "Next": "GerarMensagemAssistente"
+    },
+    "GerarMensagemAssistente": {
+      "Type": "Task",
+      "Comment": "Bedrock gera a mensagem personalizada de confirmacao para o cliente",
+      "Resource": "arn:aws:states:::bedrock:invokeModel",
+      "Parameters": {
+        "ModelId": "amazon.nova-lite-v1:0",
+        "Body": {
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "text.$": "States.Format('Você é o assistente de um app de delivery. Escreva uma mensagem curta e simpática, com no máximo 3 frases, para o cliente {} confirmando o pedido {}. Itens do pedido: {}. Sugira um acompanhamento que combine com o pedido.', $.pedido.cliente, $.pedido.id, States.JsonToString($.pedido.itens))"
+                }
+              ]
+            }
+          ],
+          "inferenceConfig": {
+            "maxTokens": 200,
+            "temperature": 0.7
+          }
+        }
+      },
+      "ResultSelector": {
+        "mensagem.$": "$.Body.output.message.content[0].text"
+      },
+      "ResultPath": "$.assistente",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.erroBedrock",
+          "Next": "MensagemPadrao"
+        }
+      ],
+      "Next": "EmPreparo"
+    },
+    "MensagemPadrao": {
+      "Type": "Pass",
+      "Comment": "Fallback: o pedido segue mesmo se a IA falhar",
+      "Result": { "mensagem": "Pedido confirmado! Já estamos preparando tudo para você." },
+      "ResultPath": "$.assistente",
+      "Next": "EmPreparo"
+    },
+    "EmPreparo": {
+      "Type": "Pass",
+      "Result": "EM_PREPARO",
+      "ResultPath": "$.status",
+      "Next": "AguardarPreparo"
+    },
+    "AguardarPreparo": {
+      "Type": "Wait",
+      "Seconds": 5,
+      "Next": "SaiuParaEntrega"
+    },
+    "SaiuParaEntrega": {
+      "Type": "Pass",
+      "Result": "SAIU_PARA_ENTREGA",
+      "ResultPath": "$.status",
+      "Next": "AguardarEntrega"
+    },
+    "AguardarEntrega": {
+      "Type": "Wait",
+      "Seconds": 5,
+      "Next": "Entregue"
+    },
+    "Entregue": {
+      "Type": "Pass",
+      "Result": "ENTREGUE",
+      "ResultPath": "$.status",
+      "End": true
+    }
+  }
+}
